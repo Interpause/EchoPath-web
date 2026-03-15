@@ -1,6 +1,6 @@
 # EchoPath Web + Backend (Local Run)
 
-<div style="max-width: 56vh;"><div style="left: 0; width: 100%; height: 0; position: relative; padding-bottom: 177.7778%;"><iframe src="https://www.youtube.com/embed/SjxQXo5ecP4?rel=0&cc_load_policy=1" style="top: 0; left: 0; width: 100%; height: 100%; position: absolute; border: 0;" allowfullscreen scrolling="no" allow="accelerometer *; clipboard-write *; encrypted-media *; gyroscope *; picture-in-picture *; web-share *;" referrerpolicy="strict-origin"></iframe></div></div>
+![Watch our demo video here](https://youtube.com/shorts/SjxQXo5ecP4)
 
 ## Prerequisites
 
