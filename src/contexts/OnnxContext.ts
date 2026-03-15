@@ -17,22 +17,22 @@ export interface BBox {
   classIndex: number;
 }
 
-export interface InferYOLOOptions {
+export interface InferYOLO26Options {
   inputSize?: number;
   confidenceThreshold?: number;
   normalizeInput?: boolean;
 }
 
-type InferYOLOModelFn = (
+type InferObjDetModel = (
   source: PixelSource,
-  options?: InferYOLOOptions,
+  options?: InferYOLO26Options,
 ) => Promise<BBox[]>;
 
 export interface OnnxContextState {
   model: ort.InferenceSession | null;
   isLoading: boolean;
   error: unknown | null;
-  inferYOLOModel: InferYOLOModelFn | null;
+  inferObjDetModel: InferObjDetModel | null;
 }
 
 export const OnnxContext = createContext<OnnxContextState | null>(null);

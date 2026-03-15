@@ -29,21 +29,21 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 export function CVPage() {
-  const { isLoading, error, inferYOLOModel } = useOnnx();
+  const { isLoading, error, inferObjDetModel: inferYOLO26Model } = useOnnx();
   const [isCameraRunning, setIsCameraRunning] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [detections, setDetections] = useState<BBox[]>([]);
   const [snapshot, setSnapshot] = useState<SnapshotState | null>(null);
 
-  const isInferenceReady = !isLoading && !error && !!inferYOLOModel;
+  const isInferenceReady = !isLoading && !error && !!inferYOLO26Model;
 
   const statusText = useMemo(() => {
-    if (isLoading) return "Loading ONNX Runtime + YOLO model…";
+    if (isLoading) return "Loading ONNX Runtime + YOLO26 model…";
     if (error) return "Failed to load model runtime.";
-    if (!inferYOLOModel) return "Model unavailable.";
+    if (!inferYOLO26Model) return "Model unavailable.";
     return "Model ready.";
-  }, [error, inferYOLOModel, isLoading]);
+  }, [error, inferYOLO26Model, isLoading]);
 
   const startCamera = async () => {
     try {
@@ -86,7 +86,7 @@ export function CVPage() {
   };
 
   const captureAndInfer = async () => {
-    if (!inferYOLOModel || !isCameraRunning) return;
+    if (!inferYOLO26Model || !isCameraRunning) return;
 
     setIsCapturing(true);
     setCameraError(null);
@@ -95,7 +95,7 @@ export function CVPage() {
       const capture = await CameraView.captureSample({ quality: 80 });
       const src = toDataUrl(capture.photo);
       const image = await loadImage(src);
-      const boxes = await inferYOLOModel(image, {
+      const boxes = await inferYOLO26Model(image, {
         confidenceThreshold: 0.1,
       });
 
@@ -126,7 +126,7 @@ export function CVPage() {
   return (
     <main className="cv-page camera-modal">
       <header className="cv-header">
-        <h1>Camera + YOLO</h1>
+        <h1>Camera + YOLO26</h1>
         <p>{statusText}</p>
       </header>
 
