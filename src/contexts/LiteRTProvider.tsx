@@ -1,10 +1,33 @@
 import type { PropsWithChildren } from "react";
 import { useEffect, useState, useRef } from "react";
 import { LiteRTContext } from "./LiteRTContext";
-import { loadLiteRt } from "@litertjs/core";
+import {
+  CompileOptions,
+  loadAndCompile,
+  loadLiteRt,
+  getWebGpuDevice,
+} from "@litertjs/core";
+import * as tf from "@tensorflow/tfjs";
+import "@tensorflow/tfjs-backend-webgpu";
+import { WebGPUBackend } from "@tensorflow/tfjs-backend-webgpu";
 
 async function loadRuntime() {
+  // Initialize TensorFlow.js WebGPU backend
+  await tf.setBackend("webgpu");
+
+  // Initialize LiteRT.js's Wasm files
   await loadLiteRt(`/litert/`);
+
+  // Make TFJS use the same GPU device as LiteRT.js (for tensor conversion)
+  const device = await getWebGpuDevice();
+  tf.removeBackend("webgpu");
+  if (!device) {
+    console.error("No WebGPU device available, falling back to CPU...");
+    tf.setBackend("wasm");
+    return;
+  }
+  tf.registerBackend("webgpu", () => new WebGPUBackend(device));
+  await tf.setBackend("webgpu");
 }
 
 async function loadYOLOModel() {}
