@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">EchoPath</string>
+    <string name="title_activity_main">EchoPath</string>
+    <string name="package_name">echopath.interpause.github.io</string>
+    <string name="custom_url_scheme">echopath.interpause.github.io</string>
+</resources>

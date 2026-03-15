@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npx cap sync",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
     "@litertjs/core": "^2.0.0",
     "@litertjs/tfjs-interop": "^2.0.0",
     "@tensorflow/tfjs": "^4.22.0",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
+    "@capacitor/cli": "^8.2.0",
     "@eslint/js": "^9.39.4",
     "@rolldown/plugin-babel": "^0.2.0",
     "@types/babel__core": "^7.20.5",
