@@ -1,4 +1,4 @@
-import type { BBox } from "@/contexts/LiteRTContext";
+import type { BBox } from "@/contexts/OnnxContext";
 
 interface DetectionOverlayProps {
   boxes: BBox[];
@@ -18,6 +18,7 @@ export function DetectionOverlay({
   if (!imageWidth || !imageHeight || boxes.length === 0) {
     return null;
   }
+  console.log(boxes);
 
   return (
     <div className="detection-overlay" aria-hidden="true">

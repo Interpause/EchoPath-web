@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { CameraView } from "capacitor-camera-view";
-import { useLiteRT } from "@/contexts/LiteRTContext";
+import { useOnnx } from "@/contexts/OnnxContext";
 import { DetectionOverlay } from "@/components/DetectionOverlay";
-import type { BBox } from "@/contexts/LiteRTContext";
+import type { BBox } from "@/contexts/OnnxContext";
 import "./CVPage.css";
 
 interface SnapshotState {
@@ -29,7 +29,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 export function CVPage() {
-  const { isLoading, error, inferYOLOModel } = useLiteRT();
+  const { isLoading, error, inferYOLOModel } = useOnnx();
   const [isCameraRunning, setIsCameraRunning] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -39,7 +39,7 @@ export function CVPage() {
   const isInferenceReady = !isLoading && !error && !!inferYOLOModel;
 
   const statusText = useMemo(() => {
-    if (isLoading) return "Loading LiteRT + YOLO model…";
+    if (isLoading) return "Loading ONNX Runtime + YOLO model…";
     if (error) return "Failed to load model runtime.";
     if (!inferYOLOModel) return "Model unavailable.";
     return "Model ready.";
@@ -97,7 +97,6 @@ export function CVPage() {
       const image = await loadImage(src);
       const boxes = await inferYOLOModel(image, {
         confidenceThreshold: 0.1,
-        normalizeInput: false,
       });
 
       setSnapshot({
