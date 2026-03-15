@@ -26,24 +26,30 @@ Demo Video: <https://youtube.com/shorts/SjxQXo5ecP4>
 
 3. Copy the generated `dist/` folder into `backend/dist/`.
 
-4. Go into the backend folder and install backend dependencies:
+```bash
+cp -r dist backend/dist
+```
+
+5. Go into the backend folder and install backend dependencies:
 
    ```bash
    cd backend
    poetry install
    ```
 
-5. Activate the virtual environment:
+6. Activate the virtual environment:
 
    ```bash
    source .venv/bin/activate
    ```
 
-6. Start the backend development server:
+7. Start the backend development server:
 
    ```bash
    poe dev
    ```
+
+The webapp will be hosted at <http://localhost:3000/index.html>.
 
 ## Important note
 
