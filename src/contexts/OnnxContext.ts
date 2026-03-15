@@ -23,9 +23,16 @@ export interface InferYOLO26Options {
   normalizeInput?: boolean;
 }
 
+export interface InferYOLO11Options extends InferYOLO26Options {
+  iouThreshold?: number;
+  maxDetections?: number;
+}
+
+export type InferObjDetOptions = InferYOLO11Options;
+
 type InferObjDetModel = (
   source: PixelSource,
-  options?: InferYOLO26Options,
+  options?: InferObjDetOptions,
 ) => Promise<BBox[]>;
 
 export interface OnnxContextState {
