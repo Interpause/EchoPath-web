@@ -1,71 +1,572 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CameraView } from "capacitor-camera-view";
-import { useOnnx } from "@/contexts/OnnxContext";
-import { DetectionOverlay } from "@/components/DetectionOverlay";
-import type { BBox } from "@/contexts/OnnxContext";
+import { SpatialAudioEngine } from "../../lib/sound";
 import "./CVPage.css";
 
-interface SnapshotState {
-  src: string;
-  width: number;
-  height: number;
-}
+const DEFAULT_FRAME_SEND_INTERVAL_MS = 250;
+const DEFAULT_AUDIO_MIN_INTERVAL_MS = 350;
+const DEFAULT_BACKEND_WS_ENDPOINT = "http://10.180.69.14:3000/ws";
 
-function toDataUrl(base64: string) {
-  if (base64.startsWith("data:")) {
-    return base64;
+function toWebSocketUrl(rawUrl: string): string {
+  if (rawUrl.startsWith("ws://") || rawUrl.startsWith("wss://")) {
+    return rawUrl;
   }
 
-  return `data:image/jpeg;base64,${base64}`;
+  if (rawUrl.startsWith("http://")) {
+    return `ws://${rawUrl.slice("http://".length)}`;
+  }
+
+  if (rawUrl.startsWith("https://")) {
+    return `wss://${rawUrl.slice("https://".length)}`;
+  }
+
+  return rawUrl;
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
+function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Failed to decode captured frame."));
-    image.src = src;
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onloadend = () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        // strip the data URL prefix if present
+        resolve(result.replace(/^data:image\/[a-zA-Z]+;base64,/, ""));
+      } else {
+        reject(new Error("Failed to convert blob to base64."));
+      }
+    };
+    reader.readAsDataURL(blob);
   });
 }
 
+type Detection = {
+  xmin: number;
+  ymin: number;
+  xmax: number;
+  ymax: number;
+  label?: string;
+  confidence?: number;
+  dist_point?: DistPoint;
+};
+
+type DistPoint = {
+  x: number;
+  y: number;
+  distance: number;
+  label?: string;
+  confidence?: number;
+  z?: number;
+};
+
+type SpatialPoint = {
+  x: number;
+  y: number;
+  z: number;
+};
+
 export function CVPage() {
-  const { isLoading, error, inferObjDetModel: inferYOLO26Model } = useOnnx();
   const [isCameraRunning, setIsCameraRunning] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [detections, setDetections] = useState<BBox[]>([]);
-  const [snapshot, setSnapshot] = useState<SnapshotState | null>(null);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [lastSentAt, setLastSentAt] = useState<number | null>(null);
+  const [captureFps, setCaptureFps] = useState(4);
+  const [latestDetections, setLatestDetections] = useState<Detection[]>([]);
+  const [latestDistPoints, setLatestDistPoints] = useState<DistPoint[]>([]);
 
-  const isInferenceReady = !isLoading && !error && !!inferYOLO26Model;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const overlayRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const captureIntervalRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const audioEngineRef = useRef<SpatialAudioEngine | null>(null);
+  const lastAudioAtRef = useRef(0);
 
-  const statusText = useMemo(() => {
-    if (isLoading) return "Loading ONNX Runtime + YOLO26 model…";
-    if (error) return "Failed to load model runtime.";
-    if (!inferYOLO26Model) return "Model unavailable.";
-    return "Model ready.";
-  }, [error, inferYOLO26Model, isLoading]);
+  const backendWsUrl = toWebSocketUrl(
+    ((import.meta.env as any).VITE_BACKEND_WS_URL as string | undefined) ??
+      DEFAULT_BACKEND_WS_ENDPOINT,
+  );
+
+  const statusText = isCameraRunning
+    ? "Camera is running." +
+      (lastSentAt ? ` Last frame sent: ${new Date(lastSentAt).toLocaleTimeString()}` : "")
+    : "Camera is stopped.";
+
+  const getDistPointsToRender = () => {
+    const pointsFromDetections = latestDetections
+      .map((d) => d?.dist_point)
+      .filter(
+        (p): p is DistPoint =>
+          !!p &&
+          Number.isFinite(p.x) &&
+          Number.isFinite(p.y) &&
+          Number.isFinite(p.distance),
+      );
+
+    if (pointsFromDetections.length > 0) {
+      return pointsFromDetections;
+    }
+
+    return latestDistPoints.filter(
+      (p): p is DistPoint =>
+        !!p &&
+        Number.isFinite(p.x) &&
+        Number.isFinite(p.y) &&
+        Number.isFinite(p.distance),
+    );
+  };
+
+  const drawResults = () => {
+    const overlay = overlayRef.current;
+    const video = videoRef.current;
+    if (!overlay || !video) return;
+
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+
+    const width = Math.max(1, Math.floor(overlay.clientWidth));
+    const height = Math.max(1, Math.floor(overlay.clientHeight));
+    overlay.width = width;
+    overlay.height = height;
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.lineWidth = 2;
+    ctx.font = "14px system-ui, sans-serif";
+
+    latestDetections.forEach((detection) => {
+      const x = detection.xmin * width;
+      const y = detection.ymin * height;
+      const boxWidth = (detection.xmax - detection.xmin) * width;
+      const boxHeight = (detection.ymax - detection.ymin) * height;
+
+      ctx.strokeStyle = "#22c55e";
+      ctx.strokeRect(x, y, boxWidth, boxHeight);
+
+      const label = detection.label ?? "obj";
+      const conf =
+        typeof detection.confidence === "number"
+          ? detection.confidence.toFixed(2)
+          : "";
+      const text = conf ? `${label} ${conf}` : String(label);
+
+      const pad = 4;
+      const tw = ctx.measureText(text).width;
+      const th = 16;
+      ctx.fillStyle = "#22c55e";
+      ctx.fillRect(x, Math.max(0, y - th), tw + pad * 2, th);
+      ctx.fillStyle = "#111";
+      ctx.fillText(text, x + pad, Math.max(12, y - 4));
+    });
+
+    getDistPointsToRender().forEach((point) => {
+      const nx = Math.max(0, Math.min(1, Number(point.x)));
+      const ny = Math.max(0, Math.min(1, Number(point.y)));
+      const px = nx * width;
+      const py = ny * height;
+
+      ctx.fillStyle = "#f97316";
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      const distanceText = Number(point.distance).toFixed(2);
+      const cls = point.label ?? "obj";
+      const pointText = `(${distanceText}, ${cls})`;
+
+      const pad = 4;
+      const tw = ctx.measureText(pointText).width;
+      const th = 16;
+      const tx = Math.max(0, Math.min(px + 8, width - (tw + pad * 2)));
+      const ty = Math.max(th, py - 8);
+
+      ctx.fillStyle = "#f97316";
+      ctx.fillRect(tx, ty - th, tw + pad * 2, th);
+      ctx.fillStyle = "#111";
+      ctx.fillText(pointText, tx + pad, ty - 4);
+    });
+  };
+
+  const toSpatialPoint = (value: unknown): SpatialPoint | null => {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const candidate = value as Record<string, unknown>;
+    const x = candidate.x;
+    const y = candidate.y;
+    const z = candidate.z;
+
+    if (typeof x === "number" && typeof y === "number" && typeof z === "number") {
+      return { x, y, z };
+    }
+
+    const nested = candidate.coordinates;
+    if (nested && typeof nested === "object") {
+      const coords = nested as Record<string, unknown>;
+      const nx = coords.x;
+      const ny = coords.y;
+      const nz = coords.z;
+      if (
+        typeof nx === "number" &&
+        typeof ny === "number" &&
+        typeof nz === "number"
+      ) {
+        return { x: nx, y: ny, z: nz };
+      }
+    }
+
+    return null;
+  };
+
+  const extractSpatialPoints = (message: unknown): SpatialPoint[] => {
+    if (!message || typeof message !== "object") {
+      return [];
+    }
+
+    const msg = message as Record<string, unknown>;
+    const candidates: SpatialPoint[] = [];
+
+    const directPoint = toSpatialPoint(msg);
+    if (directPoint) {
+      candidates.push(directPoint);
+    }
+
+    const arraysToCheck = [msg.points, msg.objects];
+    const detections = msg.data;
+    if (Array.isArray(detections)) {
+      detections.forEach((item) => {
+        if (!item || typeof item !== "object") {
+          return;
+        }
+
+        const record = item as Record<string, unknown>;
+        const distPoint = record.dist_point;
+        if (!distPoint || typeof distPoint !== "object") {
+          return;
+        }
+
+        const point = distPoint as Record<string, unknown>;
+        const x = point.x;
+        const y = point.y;
+        const distance = point.distance;
+        const z = point.z;
+
+        if (
+          typeof x === "number" &&
+          typeof y === "number" &&
+          typeof distance === "number"
+        ) {
+          candidates.push({
+            x: (x - 0.5) * 2,
+            y: (0.5 - y) * 2,
+            z: typeof z === "number" ? z : -distance,
+          });
+        }
+      });
+    }
+
+    const distPoints = msg.dist_points;
+    if (Array.isArray(distPoints)) {
+      distPoints.forEach((item) => {
+        if (!item || typeof item !== "object") {
+          return;
+        }
+
+        const point = item as Record<string, unknown>;
+        const x = point.x;
+        const y = point.y;
+        const distance = point.distance;
+        const z = point.z;
+
+        if (
+          typeof x === "number" &&
+          typeof y === "number" &&
+          typeof distance === "number"
+        ) {
+          candidates.push({
+            x: (x - 0.5) * 2,
+            y: (0.5 - y) * 2,
+            z: typeof z === "number" ? z : -distance,
+          });
+        }
+      });
+    }
+
+    const visualizer = msg.visualizer;
+    if (visualizer && typeof visualizer === "object") {
+      const v = visualizer as Record<string, unknown>;
+      arraysToCheck.push(v.points, v.objects);
+    }
+
+    arraysToCheck.forEach((entry) => {
+      if (!Array.isArray(entry)) {
+        return;
+      }
+      entry.forEach((item) => {
+        const point = toSpatialPoint(item);
+        if (point) {
+          candidates.push(point);
+        }
+      });
+    });
+
+    return candidates;
+  };
+
+  const ensureAudioEngine = () => {
+    if (!audioEngineRef.current) {
+      audioEngineRef.current = new SpatialAudioEngine({
+        baseFrequency: 660,
+        duration: 0.16,
+        maxDistance: 30,
+      });
+    }
+
+    return audioEngineRef.current;
+  };
+
+  const playSpatialCue = (points: SpatialPoint[]) => {
+    if (!points.length) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastAudioAtRef.current < DEFAULT_AUDIO_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    const nearestPoint = points.reduce((best, point) => {
+      const bestDist = Math.hypot(best.x, best.y, best.z);
+      const pointDist = Math.hypot(point.x, point.y, point.z);
+      return pointDist < bestDist ? point : best;
+    });
+
+    lastAudioAtRef.current = now;
+    const engine = ensureAudioEngine();
+    engine.playBeep(nearestPoint.x, nearestPoint.y, nearestPoint.z).catch(() => {
+      // ignore individual audio failures
+    });
+  };
+
+  const handleWebSocketMessage = (event: MessageEvent) => {
+    try {
+      const msg = JSON.parse(event.data) as Record<string, unknown>;
+
+      if (msg.type === "detections" && Array.isArray(msg.data)) {
+        setLatestDetections(msg.data as Detection[]);
+        setLatestDistPoints(
+          Array.isArray(msg.dist_points) ? (msg.dist_points as DistPoint[]) : [],
+        );
+      } else if (msg.type === "error") {
+        const message =
+          typeof msg.error === "string" ? msg.error : "Server error.";
+        setBackendError(`Server error: ${message}`);
+      }
+
+      const spatialPoints = extractSpatialPoints(msg);
+      playSpatialCue(spatialPoints);
+
+      // Leave room for future messages (e.g., status, errors)
+    } catch {
+      // ignore malformed data
+    }
+  };
+
+  const startWebSocket = () => {
+    if (wsRef.current) return;
+
+    const ws = new WebSocket(backendWsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.debug("WebSocket connected to", backendWsUrl);
+    };
+
+    ws.onmessage = handleWebSocketMessage;
+
+    ws.onerror = (event) => {
+      console.error("WebSocket error", event);
+      setBackendError("WebSocket connection error.");
+    };
+
+    ws.onclose = () => {
+      wsRef.current = null;
+    };
+  };
+
+  const stopWebSocket = () => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    wsRef.current = null;
+    ws.close();
+  };
+
+  const stopAudioEngine = () => {
+    const engine = audioEngineRef.current;
+    audioEngineRef.current = null;
+    if (engine) {
+      engine.dispose().catch(() => {
+        // ignore cleanup errors
+      });
+    }
+  };
+
+  const sendFrameToBackend = async (imageBase64: string) => {
+    try {
+      setBackendError(null);
+      const payload = {
+        type: "image",
+        data: imageBase64,
+      };
+
+      // Log JSON payload so it can be inspected in the browser devtools.
+      console.log("Sending frame payload:", payload);
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(payload));
+      } else {
+        setBackendError("WebSocket is not connected.");
+        return;
+      }
+
+      setLastSentAt(Date.now());
+    } catch (err) {
+      setBackendError(
+        err instanceof Error ? err.message : "Failed to send frame to backend.",
+      );
+    }
+  };
+
+  const captureFrame = async () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return;
+    }
+
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    if (!width || !height) {
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+
+    ctx.drawImage(video, 0, 0, width, height);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.8),
+    );
+    if (!blob) {
+      return;
+    }
+
+    const base64 = await blobToBase64(blob);
+    await sendFrameToBackend(base64);
+  };
+
+  const startFrameCaptureLoop = () => {
+    if (captureIntervalRef.current != null) {
+      return;
+    }
+
+    const fps = Math.max(1, Math.min(30, Number(captureFps) || 5));
+    const interval = Math.floor(1000 / fps);
+
+    captureIntervalRef.current = window.setInterval(
+      () => {
+        captureFrame().catch(() => {
+          // ignore errors in individual frames so the loop continues
+        });
+      },
+      Math.max(interval, DEFAULT_FRAME_SEND_INTERVAL_MS / 2),
+    );
+  };
+
+  const stopFrameCaptureLoop = () => {
+    if (captureIntervalRef.current != null) {
+      window.clearInterval(captureIntervalRef.current);
+      captureIntervalRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    drawResults();
+  }, [latestDetections, latestDistPoints]);
+
+  useEffect(() => {
+    drawResults();
+    const onResize = () => drawResults();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  const stopMediaStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
 
   const startCamera = async () => {
     try {
       setCameraError(null);
+      setBackendError(null);
 
-      const permission = await CameraView.checkPermissions();
-      if (permission.camera !== "granted") {
-        const requested = await CameraView.requestPermissions();
-        if (requested.camera !== "granted") {
-          throw new Error("Camera permission was not granted.");
+      // Ensure permissions are granted where the Capacitor plugin is used.
+      if (CameraView && CameraView.checkPermissions) {
+        const permission = await CameraView.checkPermissions();
+        if (permission.camera !== "granted") {
+          const requested = await CameraView.requestPermissions();
+          if (requested.camera !== "granted") {
+            throw new Error("Camera permission was not granted.");
+          }
         }
       }
 
+      // Use the native camera view for permissions / platform support, but keep it hidden.
       await CameraView.start({
         position: "back",
-        containerElementId: "cameraContainer",
+        containerElementId: "cameraNativeContainer",
       });
+
+      // Also start a regular MediaStream for frame extraction.
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("navigator.mediaDevices.getUserMedia is not available.");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      startWebSocket();
+      startFrameCaptureLoop();
 
       document.body.classList.add("camera-running");
       setIsCameraRunning(true);
     } catch (err) {
       document.body.classList.remove("camera-running");
+      stopFrameCaptureLoop();
+      stopMediaStream();
+      stopWebSocket();
+      stopAudioEngine();
       setIsCameraRunning(false);
       setCameraError(
         err instanceof Error ? err.message : "Failed to start camera.",
@@ -76,6 +577,10 @@ export function CVPage() {
   const stopCamera = async () => {
     try {
       document.body.classList.remove("camera-running");
+      stopFrameCaptureLoop();
+      stopMediaStream();
+      stopWebSocket();
+      stopAudioEngine();
       await CameraView.stop();
       setIsCameraRunning(false);
     } catch (err) {
@@ -85,38 +590,13 @@ export function CVPage() {
     }
   };
 
-  const captureAndInfer = async () => {
-    if (!inferYOLO26Model || !isCameraRunning) return;
-
-    setIsCapturing(true);
-    setCameraError(null);
-
-    try {
-      const capture = await CameraView.captureSample({ quality: 80 });
-      const src = toDataUrl(capture.photo);
-      const image = await loadImage(src);
-      const boxes = await inferYOLO26Model(image, {
-        confidenceThreshold: 0.1,
-      });
-
-      setSnapshot({
-        src,
-        width: image.naturalWidth,
-        height: image.naturalHeight,
-      });
-      setDetections(boxes);
-    } catch (err) {
-      setCameraError(
-        err instanceof Error ? err.message : "Failed to capture and infer.",
-      );
-    } finally {
-      setIsCapturing(false);
-    }
-  };
-
   useEffect(() => {
     return () => {
       document.body.classList.remove("camera-running");
+      stopFrameCaptureLoop();
+      stopMediaStream();
+      stopWebSocket();
+      stopAudioEngine();
       CameraView.stop().catch(() => {
         // noop - app might already be stopped/unmounted
       });
@@ -126,65 +606,65 @@ export function CVPage() {
   return (
     <main className="cv-page camera-modal">
       <header className="cv-header">
-        <h1>Camera + YOLO26</h1>
+        <h1>Camera</h1>
         <p>{statusText}</p>
       </header>
 
       <section className="cv-controls" aria-label="Camera controls">
-        <button onClick={startCamera} disabled={isCameraRunning || isLoading}>
+        <button onClick={startCamera} disabled={isCameraRunning}>
           Start Camera
         </button>
         <button onClick={stopCamera} disabled={!isCameraRunning}>
           Stop Camera
         </button>
-        <button
-          onClick={captureAndInfer}
-          disabled={!isCameraRunning || !isInferenceReady || isCapturing}
-        >
-          {isCapturing ? "Running Inference…" : "Capture + Infer"}
-        </button>
+        <label>
+          FPS
+          <input
+            type="number"
+            min={1}
+            max={30}
+            value={captureFps}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              if (Number.isFinite(next)) {
+                setCaptureFps(next);
+              }
+            }}
+            disabled={isCameraRunning}
+            style={{ width: 72, marginLeft: 8 }}
+          />
+        </label>
       </section>
 
       {cameraError ? <p className="cv-error">{cameraError}</p> : null}
+      {backendError ? <p className="cv-error">{backendError}</p> : null}
+      <p>
+        Detections: {latestDetections.length} | Dist points: {getDistPointsToRender().length}
+      </p>
 
       <section className="cv-layout">
         <div className="cv-camera-panel">
           <h2>Camera Preview</h2>
-          <div id="cameraContainer" className="camera-container" />
-        </div>
-
-        <div className="cv-result-panel">
-          <h2>Last Captured Frame</h2>
-          {snapshot ? (
-            <div className="snapshot-wrapper">
-              <img
-                src={snapshot.src}
-                alt="Captured camera frame"
-                className="snapshot"
-              />
-              <DetectionOverlay
-                boxes={detections}
-                imageWidth={snapshot.width}
-                imageHeight={snapshot.height}
-              />
-            </div>
-          ) : (
-            <p className="cv-empty">Capture a frame to run inference.</p>
-          )}
-
-          <div className="detection-list">
-            <h3>Detections ({detections.length})</h3>
-            {detections.length === 0 ? (
-              <p className="cv-empty">No detections yet.</p>
-            ) : (
-              <ul>
-                {detections.map((box, index) => (
-                  <li key={`${box.classIndex}-${box.score}-${index}`}>
-                    {`#${index + 1} · class ${box.classIndex} · ${(box.score * 100).toFixed(1)}%`}
-                  </li>
-                ))}
-              </ul>
-            )}
+          <div id="cameraNativeContainer" style={{ display: "none" }} />
+        <div id="cameraContainer" className="camera-container">
+            <video
+              ref={videoRef}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              playsInline
+              muted
+              autoPlay
+            />
+            <canvas
+              ref={overlayRef}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                pointerEvents: "none",
+              }}
+            />
           </div>
         </div>
       </section>
