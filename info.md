@@ -111,6 +111,25 @@ Server expects:
 { "type": "image", "data": "<base64-jpeg-without-data-url-prefix>" }
 ```
 
+Wake-word query payload (sent after hearing "hey john" and the command text):
+
+```json
+{
+  "type": "query_llm",
+  "data": "<base64-jpeg-without-data-url-prefix>"
+  "text": "<recognized-command-text>"
+}
+```
+
+Backend LLM response payload (client should speak `data`):
+
+```json
+{
+  "type": "query_llm_response",
+  "data": "<text from llm>"
+}
+```
+
 Client loop:
 
 ```javascript

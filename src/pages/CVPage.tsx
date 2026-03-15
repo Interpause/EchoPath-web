@@ -6,6 +6,54 @@ import "./CVPage.css";
 const DEFAULT_FRAME_SEND_INTERVAL_MS = 250;
 const DEFAULT_AUDIO_MIN_INTERVAL_MS = 350;
 const DEFAULT_BACKEND_WS_ENDPOINT = "http://10.180.69.14:3000/ws";
+const WAKE_WORD = "hey john";
+const COMMAND_LISTEN_WINDOW_MS = 7000;
+const SPEECH_RETRY_DELAY_MS = 1200;
+const SPEECH_FATAL_ERRORS = new Set([
+  "not-allowed",
+  "service-not-allowed",
+  "audio-capture",
+  "language-not-supported",
+]);
+
+type SpeechRecognitionAlternative = {
+  transcript: string;
+};
+
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  length?: number;
+  0?: SpeechRecognitionAlternative;
+  [index: number]: SpeechRecognitionAlternative | number | boolean | undefined;
+};
+
+type SpeechRecognitionEventLike = Event & {
+  results: ArrayLike<SpeechRecognitionResultLike>;
+};
+
+interface SpeechRecognitionLike extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: ((event: Event) => void) | null;
+  onend: ((event: Event) => void) | null;
+  onerror: ((event: Event & { error?: string }) => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+function getSpeechRecognitionConstructor() {
+  const speechWindow = window as Window & {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
+
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
 
 function toWebSocketUrl(rawUrl: string): string {
   if (rawUrl.startsWith("ws://") || rawUrl.startsWith("wss://")) {
@@ -69,6 +117,7 @@ export function CVPage() {
   const [isCameraRunning, setIsCameraRunning] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [backendError, setBackendError] = useState<string | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState("Voice idle.");
   const [lastSentAt, setLastSentAt] = useState<number | null>(null);
   const [captureFps, setCaptureFps] = useState(4);
   const [latestDetections, setLatestDetections] = useState<Detection[]>([]);
@@ -81,6 +130,15 @@ export function CVPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const audioEngineRef = useRef<SpatialAudioEngine | null>(null);
   const lastAudioAtRef = useRef(0);
+  const isCameraRunningRef = useRef(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const keepRecognitionRunningRef = useRef(false);
+  const waitingForCommandRef = useRef(false);
+  const commandWindowDeadlineRef = useRef<number>(0);
+  const commandWindowTimeoutRef = useRef<number | null>(null);
+  const recognitionRestartTimeoutRef = useRef<number | null>(null);
+  const lastTranscriptRef = useRef("");
+  const lastTranscriptAtRef = useRef(0);
 
   const backendWsUrl = toWebSocketUrl(
     ((import.meta.env as any).VITE_BACKEND_WS_URL as string | undefined) ??
@@ -348,6 +406,23 @@ export function CVPage() {
     });
   };
 
+  const speakText = (text: string) => {
+    if (!("speechSynthesis" in window)) {
+      return;
+    }
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(trimmed);
+    utterance.rate = 0.95;
+    utterance.pitch = 1.0;
+    window.speechSynthesis.speak(utterance);
+  };
+
   const handleWebSocketMessage = (event: MessageEvent) => {
     try {
       const msg = JSON.parse(event.data) as Record<string, unknown>;
@@ -357,6 +432,14 @@ export function CVPage() {
         setLatestDistPoints(
           Array.isArray(msg.dist_points) ? (msg.dist_points as DistPoint[]) : [],
         );
+      } else if (msg.type === "query_llm_response") {
+        const responseText =
+          typeof msg.data === "string" ? msg.data : "";
+        if (responseText) {
+          console.log("Received query_llm_response:", responseText);
+          speakText(responseText);
+          setVoiceStatus(`Assistant: ${responseText}`);
+        }
       } else if (msg.type === "error") {
         const message =
           typeof msg.error === "string" ? msg.error : "Server error.";
@@ -437,16 +520,42 @@ export function CVPage() {
     }
   };
 
-  const captureFrame = async () => {
+  const sendQueryLlmToBackend = async (payload: {
+    type: "query_llm";
+    data: string;
+    text: string;
+  }) => {
+    try {
+      setBackendError(null);
+      console.log("Sending query_llm payload:", payload);
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(payload));
+      } else {
+        setBackendError("WebSocket is not connected.");
+        return;
+      }
+
+      setLastSentAt(Date.now());
+    } catch (err) {
+      setBackendError(
+        err instanceof Error
+          ? err.message
+          : "Failed to send query_llm payload to backend.",
+      );
+    }
+  };
+
+  const captureCurrentFrameBase64 = async (): Promise<string | null> => {
     const video = videoRef.current;
     if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      return;
+      return null;
     }
 
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) {
-      return;
+      return null;
     }
 
     const canvas = document.createElement("canvas");
@@ -454,18 +563,277 @@ export function CVPage() {
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      return;
+      return null;
     }
 
     ctx.drawImage(video, 0, 0, width, height);
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, "image/jpeg", 0.8),
     );
+
     if (!blob) {
+      return null;
+    }
+
+    return blobToBase64(blob);
+  };
+
+  const handleVoiceCommand = async (command: string) => {
+    const trimmed = command.trim();
+    if (!trimmed) {
+      setVoiceStatus("Heard wake word, but command was empty.");
       return;
     }
 
-    const base64 = await blobToBase64(blob);
+    const baseMessage = {
+      type: "query_llm" as const,
+      text: trimmed,
+    };
+    console.log("Wake command captured (query_llm):", baseMessage);
+
+    const frameBase64 = await captureCurrentFrameBase64();
+    if (!frameBase64) {
+      console.log("query_llm not sent (no frame available):", baseMessage);
+      setVoiceStatus("Command heard but no frame available yet.");
+      return;
+    }
+
+    await sendQueryLlmToBackend({
+      type: "query_llm",
+      text:
+        "In your response assume I am blind so do not use any kind of information that is unpercievable by me (colour, etc). Also BE AS BRIEF AND CONCISE as possible unless you are to instruct direction where you should be absolutely detailed and talk about what to touch and feel to direct a person who is blind. The command follows: " +
+        trimmed,
+      data: frameBase64,
+    });
+    setVoiceStatus(`Sent command: \"${trimmed}\"`);
+  };
+
+  const clearCommandWindowTimeout = () => {
+    if (commandWindowTimeoutRef.current !== null) {
+      window.clearTimeout(commandWindowTimeoutRef.current);
+      commandWindowTimeoutRef.current = null;
+    }
+  };
+
+  const exitCommandWaiting = () => {
+    waitingForCommandRef.current = false;
+    commandWindowDeadlineRef.current = 0;
+    clearCommandWindowTimeout();
+  };
+
+  const enterCommandWaiting = () => {
+    waitingForCommandRef.current = true;
+    commandWindowDeadlineRef.current = Date.now() + COMMAND_LISTEN_WINDOW_MS;
+    clearCommandWindowTimeout();
+    setVoiceStatus("Wake word detected. Waiting for command...");
+
+    commandWindowTimeoutRef.current = window.setTimeout(() => {
+      if (!waitingForCommandRef.current) {
+        return;
+      }
+
+      waitingForCommandRef.current = false;
+      commandWindowDeadlineRef.current = 0;
+      commandWindowTimeoutRef.current = null;
+      setVoiceStatus(`Listening for wake word \"${WAKE_WORD}\"...`);
+    }, COMMAND_LISTEN_WINDOW_MS);
+  };
+
+  const scheduleRecognitionRestart = (
+    recognition: SpeechRecognitionLike,
+    reason: string,
+  ) => {
+    if (!keepRecognitionRunningRef.current || !isCameraRunningRef.current) {
+      return;
+    }
+
+    if (recognitionRestartTimeoutRef.current !== null) {
+      return;
+    }
+
+    recognitionRestartTimeoutRef.current = window.setTimeout(() => {
+      recognitionRestartTimeoutRef.current = null;
+
+      if (!keepRecognitionRunningRef.current || !isCameraRunningRef.current) {
+        return;
+      }
+
+      try {
+        recognition.start();
+      } catch {
+        // ignore transient restart failure
+      }
+    }, SPEECH_RETRY_DELAY_MS);
+
+    setVoiceStatus(`${reason} Retrying...`);
+  };
+
+  const stopVoiceRecognition = () => {
+    keepRecognitionRunningRef.current = false;
+    exitCommandWaiting();
+    if (recognitionRestartTimeoutRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimeoutRef.current);
+      recognitionRestartTimeoutRef.current = null;
+    }
+
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+
+    if (recognition) {
+      try {
+        recognition.stop();
+      } catch {
+        // ignore stop failures
+      }
+    }
+
+    setVoiceStatus("Voice idle.");
+  };
+
+  const startVoiceRecognition = () => {
+    const Recognition = getSpeechRecognitionConstructor();
+    if (!Recognition) {
+      setVoiceStatus("Speech recognition unavailable on this device/browser.");
+      return;
+    }
+
+    if (recognitionRef.current) {
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+
+    keepRecognitionRunningRef.current = true;
+    exitCommandWaiting();
+    if (recognitionRestartTimeoutRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimeoutRef.current);
+      recognitionRestartTimeoutRef.current = null;
+    }
+
+    recognition.onstart = () => {
+      setVoiceStatus(`Listening for wake word \"${WAKE_WORD}\"...`);
+    };
+
+    recognition.onend = () => {
+      if (!keepRecognitionRunningRef.current || !isCameraRunningRef.current) {
+        return;
+      }
+
+      scheduleRecognitionRestart(recognition, "Speech recognition ended.");
+    };
+
+    recognition.onerror = (event) => {
+      const errorCode = event.error ?? "unknown";
+      console.warn("Speech recognition error:", errorCode);
+
+      if (SPEECH_FATAL_ERRORS.has(errorCode)) {
+        keepRecognitionRunningRef.current = false;
+        exitCommandWaiting();
+        setVoiceStatus(`Speech recognition unavailable (${errorCode}).`);
+        return;
+      }
+
+      scheduleRecognitionRestart(recognition, `Speech recognition error (${errorCode}).`);
+    };
+
+    recognition.onresult = (event) => {
+      const resultCount = event.results.length;
+      if (resultCount === 0) {
+        return;
+      }
+
+      let transcript = "";
+      for (let index = resultCount - 1; index >= 0; index -= 1) {
+        const result = event.results[index];
+        if (!result?.isFinal) {
+          continue;
+        }
+
+        const candidate = result[0];
+        const text =
+          typeof candidate?.transcript === "string"
+            ? candidate.transcript.trim()
+            : "";
+
+        if (text) {
+          transcript = text;
+          break;
+        }
+      }
+
+      if (!transcript) {
+        return;
+      }
+
+      const now = Date.now();
+      const normalized = transcript.toLowerCase();
+
+      if (
+        normalized === lastTranscriptRef.current &&
+        now - lastTranscriptAtRef.current < 1500
+      ) {
+        return;
+      }
+
+      lastTranscriptRef.current = normalized;
+      lastTranscriptAtRef.current = now;
+
+      const wakeIndex = normalized.indexOf(WAKE_WORD);
+
+      if (waitingForCommandRef.current) {
+        if (now > commandWindowDeadlineRef.current) {
+          exitCommandWaiting();
+          setVoiceStatus(`Listening for wake word \"${WAKE_WORD}\"...`);
+          return;
+        }
+
+        if (wakeIndex !== -1) {
+          const remainder = transcript.slice(wakeIndex + WAKE_WORD.length).trim();
+          if (remainder) {
+            exitCommandWaiting();
+            void handleVoiceCommand(remainder);
+            return;
+          }
+
+          enterCommandWaiting();
+          return;
+        }
+
+        exitCommandWaiting();
+        void handleVoiceCommand(transcript);
+        return;
+      }
+
+      if (wakeIndex !== -1) {
+        const remainder = transcript.slice(wakeIndex + WAKE_WORD.length).trim();
+        if (remainder) {
+          void handleVoiceCommand(remainder);
+          return;
+        }
+
+        enterCommandWaiting();
+      }
+    };
+
+    recognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+    } catch {
+      setVoiceStatus("Unable to start speech recognition.");
+    }
+  };
+
+  const captureFrame = async () => {
+    const base64 = await captureCurrentFrameBase64();
+    if (!base64) {
+      return;
+    }
+
     await sendFrameToBackend(base64);
   };
 
@@ -558,6 +926,8 @@ export function CVPage() {
 
       startWebSocket();
       startFrameCaptureLoop();
+      isCameraRunningRef.current = true;
+      startVoiceRecognition();
 
       document.body.classList.add("camera-running");
       setIsCameraRunning(true);
@@ -567,6 +937,8 @@ export function CVPage() {
       stopMediaStream();
       stopWebSocket();
       stopAudioEngine();
+      stopVoiceRecognition();
+      isCameraRunningRef.current = false;
       setIsCameraRunning(false);
       setCameraError(
         err instanceof Error ? err.message : "Failed to start camera.",
@@ -581,6 +953,8 @@ export function CVPage() {
       stopMediaStream();
       stopWebSocket();
       stopAudioEngine();
+      stopVoiceRecognition();
+      isCameraRunningRef.current = false;
       await CameraView.stop();
       setIsCameraRunning(false);
     } catch (err) {
@@ -597,6 +971,8 @@ export function CVPage() {
       stopMediaStream();
       stopWebSocket();
       stopAudioEngine();
+      stopVoiceRecognition();
+      isCameraRunningRef.current = false;
       CameraView.stop().catch(() => {
         // noop - app might already be stopped/unmounted
       });
@@ -638,6 +1014,7 @@ export function CVPage() {
 
       {cameraError ? <p className="cv-error">{cameraError}</p> : null}
       {backendError ? <p className="cv-error">{backendError}</p> : null}
+      <p>{voiceStatus}</p>
       <p>
         Detections: {latestDetections.length} | Dist points: {getDistPointsToRender().length}
       </p>
