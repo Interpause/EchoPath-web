@@ -30,20 +30,20 @@ Demo Video: <https://youtube.com/shorts/SjxQXo5ecP4>
 cp -r dist backend/dist
 ```
 
-5. Go into the backend folder and install backend dependencies:
+4. Go into the backend folder and install backend dependencies:
 
    ```bash
    cd backend
    poetry install
    ```
 
-6. Activate the virtual environment:
+5. Activate the virtual environment:
 
    ```bash
    source .venv/bin/activate
    ```
 
-7. Start the backend development server:
+6. Start the backend development server:
 
    ```bash
    poe dev
