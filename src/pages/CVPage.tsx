@@ -5,7 +5,7 @@ import "./CVPage.css";
 
 const DEFAULT_FRAME_SEND_INTERVAL_MS = 250;
 const DEFAULT_AUDIO_MIN_INTERVAL_MS = 350;
-const DEFAULT_BACKEND_WS_ENDPOINT = "http://10.180.69.14:3000/ws";
+const DEFAULT_BACKEND_WS_ENDPOINT = "/ws";
 const WAKE_WORD = "hey john";
 const COMMAND_LISTEN_WINDOW_MS = 7000;
 const SPEECH_RETRY_DELAY_MS = 1200;
@@ -601,7 +601,7 @@ export function CVPage() {
     await sendQueryLlmToBackend({
       type: "query_llm",
       text:
-        "In your response assume I am blind so do not use any kind of information that is unpercievable by me (colour, etc). Also BE AS BRIEF AND CONCISE as possible unless you are to instruct direction where you should be absolutely detailed and talk about what to touch and feel to direct a person who is blind. The command follows: " +
+        "In your response assume I am blind so do not use any kind of information that is unpercievable by me (colour, etc). Also BE AS BRIEF AND CONCISE as possible unless you are to instruct direction where you should be absolutely detailed and talk about what to touch and feel to direct a person who is blind. Use two sentences at most. The command follows: " +
         trimmed,
       data: frameBase64,
     });
