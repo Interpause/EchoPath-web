@@ -1,6 +1,8 @@
 # EchoPath Web + Backend (Local Run)
 
-![Watch our demo video here](https://youtube.com/shorts/SjxQXo5ecP4)
+[![demo video thumbnail](https://i3.ytimg.com/vi/SjxQXo5ecP4/hqdefault.jpg)](https://youtube.com/shorts/SjxQXo5ecP4)
+
+Video: <https://youtube.com/shorts/SjxQXo5ecP4>
 
 ## Prerequisites
 
