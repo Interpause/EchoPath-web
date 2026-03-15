@@ -63,7 +63,7 @@ async function loadRuntime() {
 async function loadYOLOModel(): Promise<CompiledModel> {
   const hasWebGpuDevice = !!(await getWebGpuDevice());
 
-  return loadAndCompile("/models/yolo26.tflite", {
+  return loadAndCompile("/models/yolo26n_float16.tflite", {
     accelerator: hasWebGpuDevice ? "webgpu" : "wasm",
   });
 }
