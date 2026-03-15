@@ -63,8 +63,9 @@ async function loadRuntime() {
 async function loadYOLOModel(): Promise<CompiledModel> {
   const hasWebGpuDevice = !!(await getWebGpuDevice());
 
-  return loadAndCompile("/models/yolo26n_float16.tflite", {
-    accelerator: hasWebGpuDevice ? "webgpu" : "wasm",
+  return loadAndCompile("/models/yolo26n_float32.tflite", {
+    //accelerator: hasWebGpuDevice ? "webgpu" : "wasm",
+    accelerator: "wasm",
   });
 }
 
@@ -76,7 +77,7 @@ async function inferYOLOModel(
   const {
     inputSize = YOLO_INPUT_SIZE,
     confidenceThreshold = DEFAULT_CONFIDENCE_THRESHOLD,
-    normalizeInput = false,
+    normalizeInput = true,
   } = options;
 
   const { width, height } = getSourceDimensions(source);
@@ -90,12 +91,13 @@ async function inferYOLOModel(
     }
 
     const outputValues = await outputs[0].data();
+    console.log(outputValues);
     const maxDetections = Math.floor(outputValues.length / YOLO_OUTPUT_STRIDE);
     const boxes: BBox[] = [];
 
     for (let i = 0; i < maxDetections; i++) {
       const offset = i * YOLO_OUTPUT_STRIDE;
-      const score = outputValues[offset + 4];
+      const score = 1.0 - outputValues[offset + 4];
 
       if (!Number.isFinite(score) || score < confidenceThreshold) {
         continue;
@@ -150,6 +152,7 @@ export function LiteRTProvider({ children }: PropsWithChildren) {
         const compiledModel = await loadYOLOModel();
         setModel(compiledModel);
       } catch (err) {
+        console.error(err);
         setError(err);
       } finally {
         setIsLoading(false);

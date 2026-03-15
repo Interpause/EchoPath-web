@@ -1,0 +1,116 @@
+.cv-page {
+  padding: 24px;
+  text-align: left;
+  display: grid;
+  gap: 16px;
+}
+
+.cv-header h1 {
+  margin: 0 0 4px;
+  font-size: 32px;
+}
+
+.cv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cv-controls button {
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text-h);
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.cv-controls button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cv-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.cv-camera-panel,
+.cv-result-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.camera-container {
+  position: relative;
+  min-height: 280px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.snapshot-wrapper {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
+.snapshot {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.detection-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.detection-box {
+  position: absolute;
+  border: 2px solid #ef4444;
+  box-sizing: border-box;
+}
+
+.detection-label {
+  position: absolute;
+  top: -24px;
+  left: 0;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.detection-list ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.cv-error {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.cv-empty {
+  opacity: 0.7;
+}
+
+@media (max-width: 900px) {
+  .cv-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .cv-page {
+    padding: 16px;
+  }
+}

@@ -109,3 +109,13 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+body.camera-running {
+  visibility: hidden;
+  --background: transparent;
+  --ion-background-color: transparent;
+}
+
+.camera-modal {
+  visibility: visible;
+}
