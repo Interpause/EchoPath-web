@@ -1,5 +1,16 @@
 # EchoPath Web + Backend (Local Run)
 
+<iframe
+  width="360"
+  height="640"
+  src="https://www.youtube.com/embed/SjxQXo5ecP4"
+  title="YouTube video player"
+  frameborder="0"
+  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+  referrerpolicy="strict-origin-when-cross-origin"
+  allowfullscreen>
+</iframe>
+
 ## Prerequisites
 
 - Install [Node.js](https://nodejs.org/)
