@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { BBox } from "@/contexts/OnnxContext";
 
 interface DetectionOverlayProps {
@@ -10,7 +11,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-export function DetectionOverlay({
+export const DetectionOverlay = memo(function DetectionOverlay({
   boxes,
   imageWidth,
   imageHeight,
@@ -18,7 +19,6 @@ export function DetectionOverlay({
   if (!imageWidth || !imageHeight || boxes.length === 0) {
     return null;
   }
-  console.log(boxes);
 
   return (
     <div className="detection-overlay" aria-hidden="true">
@@ -51,4 +51,4 @@ export function DetectionOverlay({
       })}
     </div>
   );
-}
+});

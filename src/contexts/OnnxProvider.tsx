@@ -40,7 +40,11 @@ export function OnnxProvider({ children }: PropsWithChildren) {
       return [];
     }
 
-    return activeModel.infer(model, source, options);
+    console.log("Inferring");
+    const results = activeModel.infer(model, source, options);
+    console.log("Infer Done");
+    return [];
+    return results;
   };
 
   const isInitializing = useRef(false);
@@ -51,8 +55,10 @@ export function OnnxProvider({ children }: PropsWithChildren) {
 
     async function init() {
       try {
+        console.log("Loading model...");
         const compiledModel = await activeModel.load();
         setModel(compiledModel);
+        console.log("Model loaded.");
       } catch (err) {
         console.error(err);
         setError(err);

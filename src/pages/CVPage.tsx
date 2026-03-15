@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CameraView } from "capacitor-camera-view";
 import { useOnnx } from "@/contexts/OnnxContext";
 import { DetectionOverlay } from "@/components/DetectionOverlay";
@@ -31,19 +31,98 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 export function CVPage() {
   const { isLoading, error, inferObjDetModel: inferYOLO26Model } = useOnnx();
   const [isCameraRunning, setIsCameraRunning] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
+  const [isInferring, setIsInferring] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [detections, setDetections] = useState<BBox[]>([]);
   const [snapshot, setSnapshot] = useState<SnapshotState | null>(null);
+  const [fps, setFps] = useState<number | null>(null);
+
+  // Refs so the rAF loop never captures stale closures
+  const loopActiveRef = useRef(false);
+  const inferInProgressRef = useRef(false);
+  const inferFnRef = useRef(inferYOLO26Model);
+  const cameraRunningRef = useRef(isCameraRunning);
+  const lastCompleteTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    inferFnRef.current = inferYOLO26Model;
+  }, [inferYOLO26Model]);
+
+  useEffect(() => {
+    cameraRunningRef.current = isCameraRunning;
+  }, [isCameraRunning]);
 
   const isInferenceReady = !isLoading && !error && !!inferYOLO26Model;
 
-  const statusText = useMemo(() => {
+  const statusText = (() => {
     if (isLoading) return "Loading ONNX Runtime + YOLO26 model…";
     if (error) return "Failed to load model runtime.";
     if (!inferYOLO26Model) return "Model unavailable.";
     return "Model ready.";
-  }, [error, inferYOLO26Model, isLoading]);
+  })();
+
+  // rAF-driven inference loop — drops frames if previous inference is still running
+  const runLoop = useCallback(() => {
+    if (!loopActiveRef.current) return;
+
+    const infer = inferFnRef.current;
+    if (!inferInProgressRef.current && infer && cameraRunningRef.current) {
+      inferInProgressRef.current = true;
+      CameraView.captureSample({ quality: 80 })
+        .then((capture) => {
+          const src = toDataUrl(capture.photo);
+          return loadImage(src).then((image) => ({ src, image }));
+        })
+        .then(({ src, image }) =>
+          infer(image, { confidenceThreshold: 0.1 }).then((boxes) => ({
+            src,
+            image,
+            boxes,
+          })),
+        )
+        .then(({ src, image, boxes }) => {
+          if (!loopActiveRef.current) return; // stopped while in-flight — discard
+          const now = performance.now();
+          if (lastCompleteTimeRef.current > 0) {
+            setFps(1000 / (now - lastCompleteTimeRef.current));
+          }
+          lastCompleteTimeRef.current = now;
+          setSnapshot({
+            src,
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          });
+          setDetections(boxes);
+        })
+        .catch((err) => {
+          if (loopActiveRef.current) {
+            setCameraError(
+              err instanceof Error ? err.message : "Inference error.",
+            );
+          }
+        })
+        .finally(() => {
+          inferInProgressRef.current = false;
+        });
+    }
+
+    requestAnimationFrame(runLoop);
+  }, []);
+
+  const startInference = () => {
+    if (!inferYOLO26Model || !isCameraRunning) return;
+    setCameraError(null);
+    lastCompleteTimeRef.current = 0;
+    setFps(null);
+    loopActiveRef.current = true;
+    setIsInferring(true);
+    requestAnimationFrame(runLoop);
+  };
+
+  const stopInference = () => {
+    loopActiveRef.current = false;
+    setIsInferring(false);
+  };
 
   const startCamera = async () => {
     try {
@@ -74,6 +153,7 @@ export function CVPage() {
   };
 
   const stopCamera = async () => {
+    stopInference();
     try {
       document.body.classList.remove("camera-running");
       await CameraView.stop();
@@ -85,37 +165,9 @@ export function CVPage() {
     }
   };
 
-  const captureAndInfer = async () => {
-    if (!inferYOLO26Model || !isCameraRunning) return;
-
-    setIsCapturing(true);
-    setCameraError(null);
-
-    try {
-      const capture = await CameraView.captureSample({ quality: 80 });
-      const src = toDataUrl(capture.photo);
-      const image = await loadImage(src);
-      const boxes = await inferYOLO26Model(image, {
-        confidenceThreshold: 0.1,
-      });
-
-      setSnapshot({
-        src,
-        width: image.naturalWidth,
-        height: image.naturalHeight,
-      });
-      setDetections(boxes);
-    } catch (err) {
-      setCameraError(
-        err instanceof Error ? err.message : "Failed to capture and infer.",
-      );
-    } finally {
-      setIsCapturing(false);
-    }
-  };
-
   useEffect(() => {
     return () => {
+      loopActiveRef.current = false;
       document.body.classList.remove("camera-running");
       CameraView.stop().catch(() => {
         // noop - app might already be stopped/unmounted
@@ -138,10 +190,10 @@ export function CVPage() {
           Stop Camera
         </button>
         <button
-          onClick={captureAndInfer}
-          disabled={!isCameraRunning || !isInferenceReady || isCapturing}
+          onClick={isInferring ? stopInference : startInference}
+          disabled={!isCameraRunning || !isInferenceReady}
         >
-          {isCapturing ? "Running Inference…" : "Capture + Infer"}
+          {isInferring ? "Stop Inference" : "Start Inference"}
         </button>
       </section>
 
@@ -169,11 +221,16 @@ export function CVPage() {
               />
             </div>
           ) : (
-            <p className="cv-empty">Capture a frame to run inference.</p>
+            <p className="cv-empty">Start inference to see captures.</p>
           )}
 
           <div className="detection-list">
-            <h3>Detections ({detections.length})</h3>
+            <div className="detection-list-header">
+              <h3>Detections ({detections.length})</h3>
+              {fps !== null ? (
+                <span className="fps-display">{fps.toFixed(1)} FPS</span>
+              ) : null}
+            </div>
             {detections.length === 0 ? (
               <p className="cv-empty">No detections yet.</p>
             ) : (
