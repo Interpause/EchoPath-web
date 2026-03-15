@@ -26,9 +26,9 @@ Demo Video: <https://youtube.com/shorts/SjxQXo5ecP4>
 
 3. Copy the generated `dist/` folder into `backend/dist/`.
 
-```bash
-cp -r dist backend/dist
-```
+  ```bash
+  cp -r dist backend/dist
+  ```
 
 4. Go into the backend folder and install backend dependencies:
 
